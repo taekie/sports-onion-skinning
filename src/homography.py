@@ -30,9 +30,18 @@ def detect_and_compute(
     mask: np.ndarray | None = None,
     method: str = "sift",
     max_features: int = 5000,
+    enhance_contrast: bool = False,
 ) -> tuple[list[cv2.KeyPoint], np.ndarray | None]:
-    """프레임에서 특징점을 검출하고 디스크립터를 계산한다."""
+    """프레임에서 특징점을 검출하고 디스크립터를 계산한다.
+
+    Args:
+        enhance_contrast: True면 CLAHE로 대비를 강화하여 경계선 특징점을 더 잘 검출
+    """
     gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+
+    if enhance_contrast:
+        clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
+        gray = clahe.apply(gray)
 
     bg_mask = None
     if mask is not None:
@@ -141,6 +150,8 @@ def compute_pairwise_homographies(
     ratio_threshold: float = 0.75,
     ransac_threshold: float = 5.0,
     transform_type: str = "similarity",
+    max_features: int = 5000,
+    enhance_contrast: bool = False,
 ) -> list[tuple[np.ndarray | None, int, int]]:
     """인접 프레임 간의 변환 행렬을 순차적으로 계산한다.
 
@@ -152,7 +163,10 @@ def compute_pairwise_homographies(
     features = []
     for i, frame in enumerate(frames):
         m = masks[i] if masks is not None else None
-        kp, des = detect_and_compute(frame, m, method=method)
+        kp, des = detect_and_compute(
+            frame, m, method=method,
+            max_features=max_features, enhance_contrast=enhance_contrast,
+        )
         features.append((kp, des))
 
     for i in range(len(frames) - 1):
@@ -233,6 +247,8 @@ def compute_cumulative_homographies(
     ransac_threshold: float = 5.0,
     transform_type: str = "similarity",
     normalize_zoom: bool = True,
+    max_features: int = 5000,
+    enhance_contrast: bool = False,
 ) -> HomographyResult:
     """모든 프레임을 기준 프레임 좌표계로 변환하는 누적 변환을 계산한다.
 
@@ -245,6 +261,8 @@ def compute_cumulative_homographies(
         ransac_threshold: RANSAC 임계값
         transform_type: 'similarity' (팬+줌), 'affine', 'homography'
         normalize_zoom: True면 줌 스케일을 정규화하여 일관된 크기 유지
+        max_features: 최대 특징점 수
+        enhance_contrast: CLAHE 대비 향상 사용 여부
     """
     n = len(frames)
     if n == 0:
@@ -254,7 +272,8 @@ def compute_cumulative_homographies(
         ref_index = n // 2
 
     pairwise = compute_pairwise_homographies(
-        frames, masks, method, ratio_threshold, ransac_threshold, transform_type
+        frames, masks, method, ratio_threshold, ransac_threshold, transform_type,
+        max_features=max_features, enhance_contrast=enhance_contrast,
     )
 
     cumulative = [None] * n
@@ -342,3 +361,56 @@ def compute_canvas_size(
     canvas_h = int(np.ceil(y_max - y_min))
 
     return canvas_w, canvas_h, offset
+
+
+def visualize_feature_matches(
+    frame1: np.ndarray,
+    frame2: np.ndarray,
+    mask1: np.ndarray | None = None,
+    mask2: np.ndarray | None = None,
+    method: str = "sift",
+    max_features: int = 5000,
+    ratio_threshold: float = 0.75,
+    enhance_contrast: bool = False,
+) -> tuple[np.ndarray, np.ndarray, int, int]:
+    """두 프레임의 특징점 검출 및 매칭을 시각화한다.
+
+    Returns:
+        (keypoint_image, match_image, n_keypoints, n_matches)
+    """
+    kp1, des1 = detect_and_compute(
+        frame1, mask1, method=method,
+        max_features=max_features, enhance_contrast=enhance_contrast,
+    )
+    kp2, des2 = detect_and_compute(
+        frame2, mask2, method=method,
+        max_features=max_features, enhance_contrast=enhance_contrast,
+    )
+
+    # 특징점 위치 시각화 (첫 프레임)
+    kp_img = frame1.copy()
+    for kp in kp1:
+        x, y = int(kp.pt[0]), int(kp.pt[1])
+        cv2.circle(kp_img, (x, y), 3, (0, 255, 0), 1, cv2.LINE_AA)
+
+    # 매칭 시각화
+    matches = match_features(des1, des2, method=method, ratio_threshold=ratio_threshold)
+
+    # cv2.drawMatches는 BGR을 기대하지만 우리는 RGB. 수동으로 그린다.
+    h1, w1 = frame1.shape[:2]
+    h2, w2 = frame2.shape[:2]
+    h_max = max(h1, h2)
+    match_img = np.zeros((h_max, w1 + w2, 3), dtype=np.uint8)
+    match_img[:h1, :w1] = frame1
+    match_img[:h2, w1:w1+w2] = frame2
+
+    # 매칭 선 그리기 (최대 100개만 표시)
+    step = max(1, len(matches) // 100)
+    for m in matches[::step]:
+        pt1 = (int(kp1[m.queryIdx].pt[0]), int(kp1[m.queryIdx].pt[1]))
+        pt2 = (int(kp2[m.trainIdx].pt[0]) + w1, int(kp2[m.trainIdx].pt[1]))
+        cv2.line(match_img, pt1, pt2, (0, 255, 100), 1, cv2.LINE_AA)
+        cv2.circle(match_img, pt1, 3, (255, 0, 0), -1)
+        cv2.circle(match_img, pt2, 3, (255, 0, 0), -1)
+
+    return kp_img, match_img, len(kp1), len(matches)

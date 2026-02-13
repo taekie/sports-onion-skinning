@@ -13,7 +13,7 @@ from src.clip_selector import get_video_meta, make_clip_selection, generate_thum
 from src.frame_extractor import extract_frames_uniform
 from src.segmentation import PlayerSegmenter, SegmentationResult, apply_mask_overlay
 from src.pipeline import composite_simple, PipelineConfig
-from src.homography import compute_cumulative_homographies, compute_canvas_size
+from src.homography import compute_cumulative_homographies, compute_canvas_size, visualize_feature_matches
 from src.panorama import build_panorama
 from src.compositor import composite_on_panorama, draw_trajectory
 from src.annotator import annotate_image, AnnotationConfig
@@ -348,7 +348,43 @@ def on_clear_logo_rects():
 
 
 
-def on_compute_homography(feature_method, transform_type, normalize_zoom):
+def on_feature_preview(feature_method, max_features, ratio_threshold, enhance_contrast):
+    """특징점 검출 및 매칭 결과를 프리뷰한다 (첫 두 프레임 기준)."""
+    if _state["seg_results"] is None or len(_state["seg_results"]) < 2:
+        return None, None, "먼저 세그멘테이션을 실행하세요 (최소 2프레임)."
+
+    frames = [sr.frame for sr in _state["seg_results"]]
+    masks = [sr.mask for sr in _state["seg_results"]]
+
+    if _state["logo_rects"]:
+        logo_mask = build_logo_mask(frames[0].shape)
+        masks = [cv2.bitwise_or(m, logo_mask) for m in masks]
+
+    # 중간 프레임 기준으로 인접 프레임과 매칭
+    ref = len(frames) // 2
+    idx_a, idx_b = max(0, ref - 1), ref
+
+    kp_img, match_img, n_kp, n_match = visualize_feature_matches(
+        frames[idx_a], frames[idx_b],
+        masks[idx_a], masks[idx_b],
+        method=feature_method,
+        max_features=int(max_features),
+        ratio_threshold=ratio_threshold,
+        enhance_contrast=enhance_contrast,
+    )
+
+    info = (
+        f"프레임 #{idx_a} ↔ #{idx_b} | "
+        f"특징점: {n_kp}개 | 매칭: {n_match}개 | "
+        f"방법: {feature_method} | 대비향상: {'ON' if enhance_contrast else 'OFF'}"
+    )
+    return kp_img, match_img, info
+
+
+def on_compute_homography(
+    feature_method, transform_type, normalize_zoom,
+    max_features, ratio_threshold, enhance_contrast,
+):
     """호모그래피를 계산한다."""
     if _state["seg_results"] is None:
         return "먼저 세그멘테이션을 실행하세요."
@@ -366,6 +402,9 @@ def on_compute_homography(feature_method, transform_type, normalize_zoom):
         method=feature_method,
         transform_type=transform_type,
         normalize_zoom=normalize_zoom,
+        ratio_threshold=ratio_threshold,
+        max_features=int(max_features),
+        enhance_contrast=enhance_contrast,
     )
     _state["homography_result"] = homography_result
 
@@ -373,6 +412,7 @@ def on_compute_homography(feature_method, transform_type, normalize_zoom):
     lines = [
         f"변환 타입: {homography_result.transform_type}",
         f"기준 프레임: #{homography_result.ref_index}",
+        f"특징점: max {int(max_features)} | ratio: {ratio_threshold} | 대비향상: {'ON' if enhance_contrast else 'OFF'}",
     ]
     for i in range(len(frames)):
         if i == homography_result.ref_index:
@@ -627,12 +667,39 @@ with gr.Blocks(title="스포츠 어니언스키닝") as app:
                     label="줌 스케일 정규화 (줌인/아웃 크기 통일)",
                     value=True,
                 )
-                homography_btn = gr.Button("변환 계산", variant="primary")
-                homography_info = gr.Textbox(
-                    label="변환 매칭 정보", interactive=False, lines=8
-                )
 
             with gr.Column(scale=1):
+                gr.Markdown("#### 매칭 파라미터")
+                max_features = gr.Slider(
+                    minimum=500, maximum=20000, value=5000, step=500,
+                    label="최대 특징점 수 (높을수록 정확, 느림)",
+                )
+                ratio_threshold = gr.Slider(
+                    minimum=0.5, maximum=0.95, value=0.75, step=0.05,
+                    label="매칭 비율 임계값 (낮을수록 엄격한 매칭)",
+                )
+                enhance_contrast = gr.Checkbox(
+                    label="CLAHE 대비 향상 (경계선이 뚜렷한 장면에 효과적)",
+                    value=False,
+                )
+
+        feature_preview_btn = gr.Button("특징점 프리뷰 (매칭 확인)", variant="secondary")
+        feature_preview_info = gr.Textbox(label="프리뷰 정보", interactive=False)
+        with gr.Row():
+            feature_kp_preview = gr.Image(label="검출된 특징점", interactive=False)
+            feature_match_preview = gr.Image(label="매칭 결과", interactive=False)
+
+        gr.Markdown("---")
+
+        with gr.Row():
+            homography_btn = gr.Button("변환 계산", variant="primary")
+        homography_info = gr.Textbox(
+            label="변환 매칭 정보", interactive=False, lines=10
+        )
+
+        gr.Markdown("---")
+        with gr.Row():
+            with gr.Column():
                 gr.Markdown("#### 파노라마 설정")
                 panorama_method = gr.Radio(
                     choices=["average", "median"],
@@ -745,10 +812,18 @@ with gr.Blocks(title="스포츠 어니언스키닝") as app:
         outputs=[logo_preview, logo_mask_info],
     )
 
+    # 탭 3: 특징점 프리뷰
+    feature_preview_btn.click(
+        fn=on_feature_preview,
+        inputs=[feature_method, max_features, ratio_threshold, enhance_contrast],
+        outputs=[feature_kp_preview, feature_match_preview, feature_preview_info],
+    )
+
     # 탭 3: 호모그래피 & 파노라마
     homography_btn.click(
         fn=on_compute_homography,
-        inputs=[feature_method, transform_type, normalize_zoom],
+        inputs=[feature_method, transform_type, normalize_zoom,
+                max_features, ratio_threshold, enhance_contrast],
         outputs=[homography_info],
     )
     panorama_btn.click(
