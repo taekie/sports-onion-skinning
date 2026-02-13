@@ -1,6 +1,6 @@
 # 스포츠 어니언스키닝 — 진행 상황
 
-## 현재 상태: Phase 1 MVP 진행 중
+## 현재 상태: 전체 파이프라인 구현 완료 + UI 개선
 
 ### 구현 완료
 
@@ -18,41 +18,74 @@
 - 전체 프레임 추출 (`extract_all_frames`)
 - 프레임 파일 저장 (`save_frames`)
 
+#### 2단계: 카메라 모션 추정 ✅
+- `src/homography.py`
+- SIFT/ORB 특징점 검출 (`detect_and_compute`) — 선수 마스크 + 로고 마스크 제외
+- Lowe's ratio test 기반 특징점 매칭 (`match_features`)
+- 변환 추정 3종 (`estimate_transform`):
+  - `similarity` (4DOF): 이동+회전+균일스케일 — 팬+줌에 최적 (기본값)
+  - `affine` (6DOF): 이동+회전+비균일스케일+전단
+  - `homography` (8DOF): 완전 사영 변환
+- 인접 프레임 간 순차 변환 (`compute_pairwise_homographies`)
+- 기준 프레임 중심 누적 변환 (`compute_cumulative_homographies`)
+- 줌 스케일 정규화 (`normalize_scales`) — 줌인/아웃 크기 통일
+- 캔버스 크기 & 오프셋 자동 계산 (`compute_canvas_size`)
+
+#### 3단계: 배경 파노라마 생성 ✅
+- `src/panorama.py`
+- 프레임/마스크 호모그래피 워핑 (`warp_frame`, `warp_mask`)
+- 커버리지 마스크 계산 (`get_warp_coverage_mask`)
+- 중앙값(median) 기반 배경 합성 — 움직이는 객체 자동 제거
+- 가중 평균(average) 기반 배경 합성 — 빠르고 메모리 효율적
+- 로고/고정 그래픽 영역 제외 후 배경 합성
+- 통합 인터페이스 (`build_panorama`)
+
 #### 4단계: 선수 세그멘테이션 ✅
 - `src/segmentation.py`
 - YOLO (v8/v11) 기반 사람 검출 (class 0 = person)
 - SAM2/SAM2.1 bbox 프롬프트 기반 정밀 마스크 생성
+- SAM 포인트 프롬프트 기반 수동 보정 (`segment_with_points`)
+- 어두운 장면 CLAHE 전처리 (`enhance_frame_clahe`)
 - 단일/일괄 프레임 세그멘테이션
 - 마스크 오버레이 시각화 (`apply_mask_overlay`)
 - RGBA 선수 추출 (`extract_player`)
 
+#### 5단계: 합성 & 블렌딩 (고급) ✅
+- `src/compositor.py`
+- 파노라마 좌표계 기반 선수 합성 (`composite_on_panorama`)
+- 투명도 모드 4종: uniform / fade_in / fade_out / center_focus
+- 마스크 경계 페더링 (GaussianBlur 기반 부드러운 합성)
+- 선수 무게중심 추적 (`get_mask_center`)
+- 이동 궤적선 그리기 (`draw_trajectory`)
+- 색상 틴트 적용 (`apply_color_tint`)
+- 드롭 섀도우 추가 (`add_shadow`)
+
+#### 6단계: 어노테이션 ✅
+- `src/annotator.py`
+- 프레임 번호 & 타임스탬프 라벨 표시 (`annotate_frame_numbers`)
+- 궤적선 3종 스타일: line / curve / dashed (`annotate_trajectory`)
+- 높이 가이드라인 — 상대 높이 눈금 표시 (`annotate_height_guide`)
+- 텍스트 라벨 (트릭 이름 등) — 4방향 배치 (`annotate_label`)
+- 통합 어노테이션 적용 (`annotate_image`)
+
 #### 파이프라인 & UI ✅
-- `src/pipeline.py` — 0→1→4단계 통합, 단순 합성 (고정 카메라 전용)
-- `app.py` — Gradio 웹 UI (2개 탭)
+- `src/pipeline.py` — 전체 6단계 통합
+  - 모드 1 (고정 카메라): 0→1→4→단순합성
+  - 모드 2 (카메라 모션): 0→1→4→2→3→5→6
+- `app.py` — Gradio 웹 UI (4개 탭)
   - 탭 1: 영상 업로드, 구간 슬라이더, 프레임 추출 갤러리
-  - 탭 2: 모델 설정, 세그멘테이션 실행, 합성 결과 출력
-- 투명도 모드 3종: uniform / fade_in / fade_out
+  - 탭 2: 모델 설정, 세그멘테이션, 수동 보정 (SAM 포인트 프롬프트), 단순 합성
+  - 탭 3: 로고 마스킹, 변환 타입 선택, 호모그래피 계산, 배경 파노라마, 파노라마 합성
+  - 탭 4: 어노테이션 (프레임 번호, 궤적선, 높이 가이드, 라벨)
 
----
-
-### 미구현 (TODO)
-
-#### 2단계: 카메라 모션 추정 ⬜
-- 호모그래피 기반 프레임 정렬 (`src/homography.py`)
-- SIFT/ORB 특징점 매칭 + RANSAC
-- 선수 마스크 제외 후 배경 특징점만 매칭
-
-#### 3단계: 배경 파노라마 생성 ⬜
-- 워핑된 프레임의 중앙값 기반 배경 합성 (`src/panorama.py`)
-- Multi-band blending
-
-#### 5단계: 합성 & 블렌딩 (고급) ⬜
-- 파노라마 좌표계 기반 합성 (`src/compositor.py`)
-- Poisson blending
-- 궤적선 오버레이
-
-#### 6단계: 어노테이션 ⬜
-- 높이 눈금, 트릭 이름, 회전 수 라벨 (`src/annotator.py`)
+#### UI 개선사항
+- 프레임 추출: 버튼 클릭 시에만 실행 (자동 추출 제거)
+- 어두운 장면 보정: CLAHE 전처리 옵션 (체크박스)
+- 검출 신뢰도 임계값 조정 (기본 0.3, 어두운 장면용)
+- 수동 보정: 갤러리 클릭 → 포인트 프롬프트로 SAM 재실행 (전경/배경 클릭 모드)
+- 로고/고정 그래픽 마스킹: 2클릭 사각형으로 제외 영역 지정 (복수 영역 지원)
+- 변환 타입 선택: similarity (팬+줌 권장) / affine / homography
+- 줌 스케일 정규화 옵션
 
 ---
 
@@ -65,6 +98,7 @@
 | 세그멘테이션 | SAM 2.1 (ultralytics) |
 | 딥러닝 | PyTorch 2.10 |
 | 웹 UI | Gradio 6.5 |
+| 이미지 처리 | Pillow |
 | 언어 | Python 3.10 |
 
 ### 샘플 데이터
