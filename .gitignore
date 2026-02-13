@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+*.pt
+*.pth
+examples/output/
+examples/input/
+*.mov
+*.mp4
+*.avi
+*.mkv
+*.webm
+.env
+venv/
+.venv/
