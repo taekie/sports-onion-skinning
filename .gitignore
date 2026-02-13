@@ -6,11 +6,7 @@ __pycache__/
 *.pth
 examples/output/
 examples/input/
-*.mov
-*.mp4
-*.avi
-*.mkv
-*.webm
+!examples/sample.mov
 .env
 venv/
 .venv/
